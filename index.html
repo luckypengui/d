@@ -85,6 +85,42 @@
             transform: scale(0.95);
         }
 
+        #open-full {
+            position: fixed;
+            top: 16px;
+            right: 16px;
+            z-index: 10;
+            background: rgba(0, 0, 0, 0.6);
+            color: #00ffff;
+            border: 1px solid #00ffff;
+            border-radius: 8px;
+            padding: 6px 12px;
+            font-size: 14px;
+            font-weight: bold;
+            text-decoration: none;
+        }
+
+        #best-display {
+            position: absolute;
+            top: 52px;
+            left: 20px;
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 14px;
+        }
+
+        #pause-hint {
+            color: #00ffff;
+            font-size: 28px;
+            font-weight: bold;
+            letter-spacing: 3px;
+            text-shadow: 0 0 12px rgba(0, 255, 255, 0.8);
+        }
+
+        .new-record {
+            color: #ffd400;
+            font-weight: bold;
+        }
+
         .hidden {
             display: none !important;
         }
@@ -103,55 +139,61 @@
 </head>
 <body>
 
-    <div id="score-display">Score: 0</div>
+    <div id="score-display">Punkte: 0</div>
+    <div id="best-display">Rekord: 0</div>
 
     <canvas id="gameCanvas"></canvas>
 
     <div id="ui-layer">
         <div id="start-screen">
             <h1>Neon Dash</h1>
-            <p>PC: Pfeiltasten / Maus<br>Handy: Tippe Links / Rechts</p>
+            <p>PC: Pfeiltasten, A/D oder Maus<br>Handy: Links / Rechts tippen oder ziehen<br>Leertaste / P: Pause</p>
             <button onclick="startGame()">Starten</button>
         </div>
 
         <div id="game-over-screen" class="hidden">
             <h1 style="color: #ff0055;">Game Over</h1>
-            <p>Dein Score: <span id="final-score">0</span></p>
+            <p>Deine Punkte: <span id="final-score">0</span><br><span id="record-line"></span></p>
             <button onclick="startGame()">Nochmal</button>
         </div>
         
+        <div id="pause-hint" class="hidden">PAUSE</div>
+
         <div class="controls-hint" id="controls-hint">
             Links tippen &larr;  &rarr; Rechts tippen
         </div>
     </div>
 
-    <!-- Link-Button zum Öffnen der externen Seite im neuen Fenster -->
-    <div style="position:fixed;bottom:20px;right:20px;z-index:1000;">
-        <a href="https://luckypengui.github.io/d/" target="_blank" rel="noopener noreferrer"
-           style="background:#00ffff;color:#111;padding:12px 22px;border-radius:8px;
-                  font-weight:bold;text-decoration:none;box-shadow:0 0 10px #00ffff;
-                  border:2px solid #00ffff;transition:background 0.2s;">
-            Öffne https://luckypengui.github.io/d/ im neuen Fenster ....
-        </a>
-    </div>
+    <!-- Nur sichtbar, wenn das Spiel eingebettet ist (z. B. in einer Vorschau): im eigenen Fenster öffnen -->
+    <a id="open-full" class="hidden" href="https://luckypengui.github.io/d/" target="_blank" rel="noopener noreferrer"
+       title="Im neuen Fenster öffnen">↗ Vollbild</a>
 
     <script>
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
-        
+
         // Screens
         const startScreen = document.getElementById('start-screen');
         const gameOverScreen = document.getElementById('game-over-screen');
         const scoreDisplay = document.getElementById('score-display');
+        const bestDisplay = document.getElementById('best-display');
         const finalScoreSpan = document.getElementById('final-score');
+        const recordLine = document.getElementById('record-line');
         const controlsHint = document.getElementById('controls-hint');
+        const pauseHint = document.getElementById('pause-hint');
+
+        // Im eingebetteten Zustand (iframe) den "Vollbild"-Link anzeigen
+        if (window.self !== window.top) document.getElementById('open-full').classList.remove('hidden');
 
         // Game State
         let gameRunning = false;
+        let paused = false;
         let score = 0;
-        let animationId;
         let lastTime = 0;
         let enemySpawnTimer = 0;
+        let best = Number(localStorage.getItem('neonDashBest')) || 0;
+        let width = 0;
+        let height = 0;
 
         // Player
         const player = {
@@ -164,64 +206,105 @@
         };
 
         // Inputs
-        const keys = {
-            ArrowLeft: false,
-            ArrowRight: false
-        };
-        const touchInput = {
-            active: false,
-            x: 0
-        };
+        const keys = {};
+        const touchInput = { active: false, x: 0 };
+        let mouseX = null; // Zielposition der Maus (null = keine Maussteuerung)
 
         // Enemies
         let enemies = [];
         let baseEnemySpeed = 200;
 
-        // Setup Canvas Größe
+        function updateBest() {
+            bestDisplay.innerText = `Rekord: ${best}`;
+        }
+        updateBest();
+
+        // Setup Canvas Größe (scharf auf hochauflösenden Displays)
         function resize() {
-            canvas.width = window.innerWidth;
-            canvas.height = window.innerHeight;
-            player.y = canvas.height - 100;
-            // Spieler zentrieren beim Resize, wenn Spiel nicht läuft
-            if (!gameRunning) player.x = canvas.width / 2 - player.width / 2;
+            const dpr = window.devicePixelRatio || 1;
+            width = window.innerWidth;
+            height = window.innerHeight;
+            canvas.width = Math.round(width * dpr);
+            canvas.height = Math.round(height * dpr);
+            canvas.style.width = width + 'px';
+            canvas.style.height = height + 'px';
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            player.y = height - 100;
+            if (!gameRunning) player.x = width / 2 - player.width / 2;
+            player.x = Math.min(Math.max(player.x, 0), width - player.width);
+            draw();
         }
         window.addEventListener('resize', resize);
-        resize();
 
-        // Input Event Listeners (Tastatur)
-        window.addEventListener('keydown', (e) => keys[e.code] = true);
+        // Tastatur
+        window.addEventListener('keydown', (e) => {
+            keys[e.code] = true;
+            if (['ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
+            if (e.repeat) return;
+            if ((e.code === 'Space' || e.code === 'KeyP') && gameRunning) {
+                togglePause();
+            } else if ((e.code === 'Space' || e.code === 'Enter') && !gameRunning) {
+                startGame();
+            }
+            mouseX = null; // Tastatur übernimmt
+        });
         window.addEventListener('keyup', (e) => keys[e.code] = false);
+        window.addEventListener('blur', () => {
+            for (const k in keys) keys[k] = false;
+            touchInput.active = false;
+        });
 
-        // Input Event Listeners (Touch)
+        // Maus: Spieler folgt der Maus
+        window.addEventListener('mousemove', (e) => { mouseX = e.clientX; });
+
+        // Touch: links/rechts tippen oder ziehen
         window.addEventListener('touchstart', (e) => {
             touchInput.active = true;
             touchInput.x = e.touches[0].clientX;
-        }, {passive: false});
+            mouseX = null;
+        }, { passive: true });
 
         window.addEventListener('touchmove', (e) => {
-            touchInput.x = e.touches[0].clientX; // Für Drag-Bewegung
-            // Verhindert das Neuladen durch Ziehen nach unten (Chrome Android)
-            e.preventDefault(); 
-        }, {passive: false});
+            touchInput.x = e.touches[0].clientX;
+            if (gameRunning) e.preventDefault(); // kein Pull-to-Refresh während des Spiels
+        }, { passive: false });
 
-        window.addEventListener('touchend', () => {
-            touchInput.active = false;
+        window.addEventListener('touchend', (e) => {
+            if (e.touches.length === 0) touchInput.active = false;
+            else touchInput.x = e.touches[0].clientX;
         });
+
+        // Beim Wechsel in einen anderen Tab automatisch pausieren
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden && gameRunning && !paused) togglePause();
+        });
+
+        function togglePause() {
+            paused = !paused;
+            pauseHint.classList.toggle('hidden', !paused);
+            if (!paused) {
+                lastTime = performance.now();
+                requestAnimationFrame(gameLoop);
+            }
+        }
 
         // Start Funktion
         function startGame() {
             startScreen.classList.add('hidden');
             gameOverScreen.classList.add('hidden');
-            controlsHint.classList.add('hidden'); // Hinweise ausblenden beim Spielen
-            
+            controlsHint.classList.add('hidden');
+            pauseHint.classList.add('hidden');
+
             gameRunning = true;
+            paused = false;
             score = 0;
             enemies = [];
+            enemySpawnTimer = 0;
             baseEnemySpeed = 200;
-            player.x = canvas.width / 2 - player.width / 2;
-            
-            scoreDisplay.innerText = `Score: 0`;
-            
+            player.x = width / 2 - player.width / 2;
+
+            scoreDisplay.innerText = 'Punkte: 0';
+
             lastTime = performance.now();
             requestAnimationFrame(gameLoop);
         }
@@ -229,75 +312,83 @@
         // Game Over Funktion
         function gameOver() {
             gameRunning = false;
-            finalScoreSpan.innerText = Math.floor(score);
+            finalScoreSpan.innerText = score;
+            if (score > best) {
+                best = score;
+                localStorage.setItem('neonDashBest', String(best));
+                updateBest();
+                recordLine.innerHTML = '<span class="new-record">🏆 Neuer Rekord!</span>';
+            } else {
+                recordLine.innerText = `Rekord: ${best}`;
+            }
             gameOverScreen.classList.remove('hidden');
+            if (navigator.vibrate) navigator.vibrate(150);
+        }
+
+        // Kreis trifft Rechteck? (genauer als ein Rechteck-Vergleich – keine "Ecken-Treffer" mehr)
+        function hits(enemy) {
+            const r = enemy.size / 2;
+            const cx = enemy.x + r;
+            const cy = enemy.y + r;
+            const nearestX = Math.max(player.x, Math.min(cx, player.x + player.width));
+            const nearestY = Math.max(player.y, Math.min(cy, player.y + player.height));
+            const dx = cx - nearestX;
+            const dy = cy - nearestY;
+            return dx * dx + dy * dy < r * r;
         }
 
         // Update Logik
         function update(deltaTime) {
             // 1. Spieler Bewegung
             let moveX = 0;
-            
-            // Tastatur
-            if (keys.ArrowLeft) moveX = -1;
-            if (keys.ArrowRight) moveX = 1;
+            if (keys.ArrowLeft || keys.KeyA) moveX -= 1;
+            if (keys.ArrowRight || keys.KeyD) moveX += 1;
+
+            if (touchInput.active) {
+                moveX = touchInput.x < width / 2 ? -1 : 1;
+            }
 
             if (moveX !== 0) {
                 player.x += moveX * player.speed * deltaTime;
-            }
-
-            // Touch Logik: Wenn Touch aktiv ist, bewege Spieler in Richtung Finger
-            // Wir teilen den Bildschirm in zwei Hälften für einfache Steuerung
-            if (touchInput.active) {
-                if (touchInput.x < window.innerWidth / 2) {
-                    player.x -= player.speed * deltaTime;
-                } else {
-                    player.x += player.speed * deltaTime;
-                }
+            } else if (mouseX !== null) {
+                // Mit Spielergeschwindigkeit zur Maus gleiten
+                const target = mouseX - player.width / 2;
+                const step = player.speed * 1.5 * deltaTime;
+                player.x += Math.max(-step, Math.min(step, target - player.x));
             }
 
             // Bildschirmgrenzen
-            if (player.x < 0) player.x = 0;
-            if (player.x + player.width > canvas.width) player.x = canvas.width - player.width;
+            player.x = Math.min(Math.max(player.x, 0), width - player.width);
 
-            // 2. Gegner Spawnen
+            // 2. Gegner Spawnen – schneller bei höherem Score
             enemySpawnTimer += deltaTime;
-            // Spawn Rate wird schneller bei höherem Score
-            let spawnRate = Math.max(0.2, 1.0 - (score / 5000)); 
-            
+            const spawnRate = Math.max(0.2, 1.0 - (score / 5000));
+
             if (enemySpawnTimer > spawnRate) {
-                const size = Math.random() * 30 + 20; // Zufällige Größe 20-50px
+                const size = Math.random() * 30 + 20; // 20-50px
                 enemies.push({
-                    x: Math.random() * (canvas.width - size),
+                    x: Math.random() * (width - size),
                     y: -size,
                     size: size,
-                    speed: baseEnemySpeed + (Math.random() * 100) + (score / 10) // Wird schneller
+                    speed: baseEnemySpeed + (Math.random() * 100) + (score / 10)
                 });
                 enemySpawnTimer = 0;
             }
 
             // 3. Gegner Bewegen & Kollision
             for (let i = enemies.length - 1; i >= 0; i--) {
-                let enemy = enemies[i];
+                const enemy = enemies[i];
                 enemy.y += enemy.speed * deltaTime;
 
-                // Kollision (Einfache Rechteck-Kollision)
-                if (
-                    player.x < enemy.x + enemy.size &&
-                    player.x + player.width > enemy.x &&
-                    player.y < enemy.y + enemy.size &&
-                    player.y + player.height > enemy.y
-                ) {
+                if (hits(enemy)) {
                     gameOver();
+                    return;
                 }
 
-                // Entfernen wenn unten raus
-                if (enemy.y > canvas.height) {
+                if (enemy.y > height) {
                     enemies.splice(i, 1);
                     score += 10;
-                    scoreDisplay.innerText = `Score: ${score}`;
-                    
-                    // Schwierigkeit erhöhen
+                    scoreDisplay.innerText = `Punkte: ${score}`;
                     baseEnemySpeed += 2;
                 }
             }
@@ -305,47 +396,50 @@
 
         // Zeichnen
         function draw() {
-            // Hintergrund leeren
-            ctx.fillStyle = '#111'; // Dunkler Hintergrund
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#111';
+            ctx.fillRect(0, 0, width, height);
 
             // Gitter-Effekt (Retro Look)
             ctx.strokeStyle = '#222';
             ctx.lineWidth = 2;
             ctx.beginPath();
-            for(let x=0; x<canvas.width; x+=50) { ctx.moveTo(x,0); ctx.lineTo(x,canvas.height); }
-            for(let y=0; y<canvas.height; y+=50) { ctx.moveTo(0,y); ctx.lineTo(canvas.width,y); }
+            for (let x = 0; x < width; x += 50) { ctx.moveTo(x, 0); ctx.lineTo(x, height); }
+            for (let y = 0; y < height; y += 50) { ctx.moveTo(0, y); ctx.lineTo(width, y); }
             ctx.stroke();
 
-            // Spieler zeichnen (Neon Glow)
+            // Spieler (Neon Glow)
             ctx.shadowBlur = 20;
             ctx.shadowColor = player.color;
             ctx.fillStyle = player.color;
             ctx.fillRect(player.x, player.y, player.width, player.height);
-            ctx.shadowBlur = 0; // Reset Shadow
 
-            // Gegner zeichnen
+            // Gegner (ebenfalls leuchtend)
+            ctx.shadowColor = '#ff0055';
+            ctx.shadowBlur = 15;
             ctx.fillStyle = '#ff0055';
-            for (let enemy of enemies) {
+            for (const enemy of enemies) {
                 ctx.beginPath();
-                ctx.arc(enemy.x + enemy.size/2, enemy.y + enemy.size/2, enemy.size/2, 0, Math.PI * 2);
+                ctx.arc(enemy.x + enemy.size / 2, enemy.y + enemy.size / 2, enemy.size / 2, 0, Math.PI * 2);
                 ctx.fill();
             }
+            ctx.shadowBlur = 0;
         }
 
         // Game Loop
         function gameLoop(timestamp) {
-            if (!gameRunning) return;
+            if (!gameRunning || paused) return;
 
-            let deltaTime = (timestamp - lastTime) / 1000;
+            // Begrenzen, damit nach Rucklern niemand durch Gegner "teleportiert"
+            const deltaTime = Math.min((timestamp - lastTime) / 1000, 0.05);
             lastTime = timestamp;
 
             update(deltaTime);
             draw();
 
-            requestAnimationFrame(gameLoop);
+            if (gameRunning) requestAnimationFrame(gameLoop);
         }
-        
+
+        resize();
     </script>
 </body>
 </html>
